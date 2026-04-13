@@ -1,4 +1,4 @@
-# VibeCoder CLI
+# Trabalho N1 - Entrega 2 - CLI
 
 Um aplicativo CLI para gerenciar notícias por estado usando TypeScript, Drizzle ORM e SQLite.
 
