@@ -1,10 +1,107 @@
 import * as readline from 'readline/promises';
 import { stdin as input, stdout as output } from 'process';
+import { asc, desc, eq } from 'drizzle-orm';
 
-// Aqui importar o banco e as tabelas depois
 import { db } from './db/index.ts';
-import { uf, cidade, noticia } from './db/schema.ts';
-import { desc, asc, eq } from 'drizzle-orm';
+import { uf, cidade, noticia, tag, noticiaTag } from './db/schema.ts';
+
+type NoticiaRegistro = typeof noticia.$inferSelect;
+
+function normalizarTag(valor: string) {
+  return valor.trim().replace(/\s+/g, ' ');
+}
+
+function extrairTagsInformadas(entrada: string) {
+  const tagsUnicas = new Map<string, string>();
+
+  for (const item of entrada.split(',')) {
+    const tagNormalizada = normalizarTag(item);
+
+    if (tagNormalizada === '') {
+      continue;
+    }
+
+    const chaveTag = tagNormalizada.toLowerCase();
+    if (!tagsUnicas.has(chaveTag)) {
+      tagsUnicas.set(chaveTag, tagNormalizada);
+    }
+  }
+
+  return [...tagsUnicas.values()];
+}
+
+function formatarTags(tagsDaNoticia: string[]) {
+  return tagsDaNoticia.length > 0 ? tagsDaNoticia.join(', ') : 'Sem tags';
+}
+
+async function buscarTagsDaNoticia(noticiaId: number) {
+  const tagsDaNoticia = await db
+    .select({ conteudo: tag.conteudo })
+    .from(noticiaTag)
+    .innerJoin(tag, eq(tag.id, noticiaTag.tagId))
+    .where(eq(noticiaTag.noticiaId, noticiaId))
+    .orderBy(asc(tag.conteudo));
+
+  return tagsDaNoticia.map((registro) => registro.conteudo);
+}
+
+async function obterOuCriarTags(nomesTags: string[]) {
+  const tagsExistentes = await db.select().from(tag);
+  const mapaTags = new Map<string, (typeof tagsExistentes)[number]>();
+
+  for (const registro of tagsExistentes) {
+    mapaTags.set(normalizarTag(registro.conteudo).toLowerCase(), registro);
+  }
+
+  const idsTags: number[] = [];
+
+  for (const nomeTag of nomesTags) {
+    const chaveTag = nomeTag.toLowerCase();
+    const tagExistente = mapaTags.get(chaveTag);
+
+    if (tagExistente) {
+      idsTags.push(tagExistente.id);
+      continue;
+    }
+
+    const [novaTag] = await db
+      .insert(tag)
+      .values({ conteudo: nomeTag })
+      .returning({ id: tag.id, conteudo: tag.conteudo });
+
+    if (!novaTag) {
+      throw new Error('Nao foi possivel cadastrar a tag.');
+    }
+
+    mapaTags.set(chaveTag, novaTag);
+    idsTags.push(novaTag.id);
+  }
+
+  return idsTags;
+}
+
+async function vincularTagsANoticia(noticiaId: number, idsTags: number[]) {
+  if (idsTags.length === 0) {
+    return;
+  }
+
+  await db.insert(noticiaTag).values(
+    idsTags.map((tagId) => ({
+      noticiaId,
+      tagId,
+    })),
+  );
+}
+
+async function exibirNoticiaComTags(noticiaAtual: NoticiaRegistro, indice: number) {
+  const tagsDaNoticia = await buscarTagsDaNoticia(noticiaAtual.id);
+
+  console.log(`${indice + 1}. ${noticiaAtual.titulo}`);
+  console.log(`   Conteudo: ${noticiaAtual.conteudo}`);
+  console.log(`   Tags: ${formatarTags(tagsDaNoticia)}`);
+  console.log(`   Data: ${noticiaAtual.data_criacao}`);
+  console.log('   ---');
+}
 
 async function main() {
   const rl = readline.createInterface({ input, output });
@@ -12,62 +109,73 @@ async function main() {
   while (true) {
     console.log(`
       ===== MENU =====
-      0. Cadastrar Notícia
-      1. Listar Notícias (Mais recentes primeiro)
-      2. Listar Notícias (Mais antigas primeiro)
-      3. Listar Notícias (Por Estado)
+      0. Cadastrar Noticia
+      1. Listar Noticias (Mais recentes primeiro)
+      2. Listar Noticias (Mais antigas primeiro)
+      3. Listar Noticias (Por Estado)
       4. Listar Agrupado
       5. Cadastrar UF
       6. Cadastrar Cidade
       7. Sair
     `);
 
-    const opcao = await rl.question("Escolha uma opção: ");
+    const opcao = await rl.question('Escolha uma opcao: ');
 
     switch (opcao) {
       case '0':
-        // Cadastrar notícia
         try {
-          const titulo = await rl.question("Informe o Título: ");
-          const conteudo = await rl.question("Insira o texto: ");
+          const titulo = await rl.question('Informe o Titulo: ');
+          const conteudo = await rl.question('Insira o texto: ');
 
-          // Listar cidades cadastradas
           const cidades = await db.select().from(cidade);
-
           if (cidades.length === 0) {
-            console.log("Nenhuma cidade cadastrada. Cadastre uma cidade antes de adicionar notícias.");
+            console.log('Nenhuma cidade cadastrada. Cadastre uma cidade antes de adicionar noticias.');
             break;
           }
 
-          console.log("\nCidades disponíveis:");
-          cidades.forEach((c, index) => {
-            console.log(`${index + 1}. ${c.nome}`);
+          console.log('\nCidades disponiveis:');
+          cidades.forEach((registro, index) => {
+            console.log(`${index + 1}. ${registro.nome}`);
           });
 
-          const escolhaCidade = await rl.question("Selecione uma cidade (número): ");
-          const indexCidade = parseInt(escolhaCidade) - 1;
+          const escolhaCidade = await rl.question('Selecione uma cidade (numero): ');
+          const indexCidade = parseInt(escolhaCidade, 10) - 1;
 
-          if (indexCidade < 0 || indexCidade >= cidades.length) {
-            console.log("Cidade inválida!");
+          if (Number.isNaN(indexCidade) || indexCidade < 0 || indexCidade >= cidades.length) {
+            console.log('Cidade invalida!');
             break;
           }
 
           const cidadeSelecionada = cidades[indexCidade]!;
+          const entradaTags = await rl.question(
+            'Informe as tags separadas por virgula (ou pressione Enter para nenhuma): ',
+          );
+          const nomesTags = extrairTagsInformadas(entradaTags);
 
-          await db.insert(noticia).values({
-            titulo,
-            conteudo,
-            cidadeId: cidadeSelecionada.id,
-          });
+          const [novaNoticia] = await db
+            .insert(noticia)
+            .values({
+              titulo,
+              conteudo,
+              cidadeId: cidadeSelecionada.id,
+            })
+            .returning({ id: noticia.id });
 
-          console.log("✓ Notícia cadastrada com sucesso!");
+          if (!novaNoticia) {
+            throw new Error('Nao foi possivel cadastrar a noticia.');
+          }
+
+          const idsTags = await obterOuCriarTags(nomesTags);
+          await vincularTagsANoticia(novaNoticia.id, idsTags);
+
+          console.log('Noticia cadastrada com sucesso!');
+          console.log(`Tags vinculadas: ${formatarTags(nomesTags)}`);
         } catch (error) {
-          console.error("Erro ao cadastrar notícia:", error);
+          console.error('Erro ao cadastrar noticia:', error);
         }
         break;
 
       case '1':
-        // Listar notícias (mais recentes primeiro)
         try {
           const noticiasMaisRecentes = await db
             .select()
@@ -75,25 +183,22 @@ async function main() {
             .orderBy(desc(noticia.data_criacao));
 
           if (noticiasMaisRecentes.length === 0) {
-            console.log("Nenhuma notícia cadastrada.");
+            console.log('Nenhuma noticia cadastrada.');
           } else {
-            console.log("\n===== NOTÍCIAS (MAIS RECENTES PRIMEIRO) =====\n");
-            noticiasMaisRecentes.forEach((n, index) => {
-              console.log(`${index + 1}. ${n.titulo}`);
-              console.log(`   Conteúdo: ${n.conteudo}`);
-              console.log(`   Data: ${n.data_criacao}`);
-              console.log(`   ---`);
-            });
+            console.log('\n===== NOTICIAS (MAIS RECENTES PRIMEIRO) =====\n');
+
+            for (const [index, noticiaAtual] of noticiasMaisRecentes.entries()) {
+              await exibirNoticiaComTags(noticiaAtual, index);
+            }
           }
 
-          await rl.question("\n( z ) Voltar");
+          await rl.question('\n( z ) Voltar');
         } catch (error) {
-          console.error("Erro ao listar notícias:", error);
+          console.error('Erro ao listar noticias:', error);
         }
         break;
 
       case '2':
-        // Listar notícias (mais antigas primeiro)
         try {
           const noticiasMaisAntigas = await db
             .select()
@@ -101,108 +206,101 @@ async function main() {
             .orderBy(asc(noticia.data_criacao));
 
           if (noticiasMaisAntigas.length === 0) {
-            console.log("Nenhuma notícia cadastrada.");
+            console.log('Nenhuma noticia cadastrada.');
           } else {
-            console.log("\n===== NOTÍCIAS (MAIS ANTIGAS PRIMEIRO) =====\n");
-            noticiasMaisAntigas.forEach((n, index) => {
-              console.log(`${index + 1}. ${n.titulo}`);
-              console.log(`   Conteúdo: ${n.conteudo}`);
-              console.log(`   Data: ${n.data_criacao}`);
-              console.log(`   ---`);
-            });
+            console.log('\n===== NOTICIAS (MAIS ANTIGAS PRIMEIRO) =====\n');
+
+            for (const [index, noticiaAtual] of noticiasMaisAntigas.entries()) {
+              await exibirNoticiaComTags(noticiaAtual, index);
+            }
           }
 
-          await rl.question("\n( z ) Voltar");
+          await rl.question('\n( z ) Voltar');
         } catch (error) {
-          console.error("Erro ao listar notícias:", error);
+          console.error('Erro ao listar noticias:', error);
         }
         break;
 
       case '3':
-        // Listar notícias de um estado específico
         try {
-          // Listar todos os estados (UF)
           const estados = await db.select().from(uf);
 
           if (estados.length === 0) {
-            console.log("Nenhum estado cadastrado.");
+            console.log('Nenhum estado cadastrado.');
             break;
           }
 
-          console.log("\nEstados disponíveis:");
-          estados.forEach((e, index) => {
-            console.log(`${index + 1}. ${e.nome} (${e.sigla})`);
+          console.log('\nEstados disponiveis:');
+          estados.forEach((registro, index) => {
+            console.log(`${index + 1}. ${registro.nome} (${registro.sigla})`);
           });
 
-          const escolhaEstado = await rl.question("Selecione um estado (número): ");
-          const indexEstado = parseInt(escolhaEstado) - 1;
+          const escolhaEstado = await rl.question('Selecione um estado (numero): ');
+          const indexEstado = parseInt(escolhaEstado, 10) - 1;
 
-          if (indexEstado < 0 || indexEstado >= estados.length) {
-            console.log("Estado inválido!");
+          if (Number.isNaN(indexEstado) || indexEstado < 0 || indexEstado >= estados.length) {
+            console.log('Estado invalido!');
             break;
           }
 
           const estadoSelecionado = estados[indexEstado]!;
 
-          // Perguntar como ordenar
-          console.log("\nComo deseja ordenar?");
-          console.log("( a ) Ordenar por mais recentes");
-          console.log("( b ) Ordenar por mais antigas");
-          console.log("( z ) Voltar");
-          
-          const opcaoOrdenacao = await rl.question("Escolha uma opção: ");
+          console.log('\nComo deseja ordenar?');
+          console.log('( a ) Ordenar por mais recentes');
+          console.log('( b ) Ordenar por mais antigas');
+          console.log('( z ) Voltar');
 
-          let noticiasEstado;
-
-          if (opcaoOrdenacao === 'a') {
-            // Mais recentes primeiro
-            noticiasEstado = await db
-              .select()
-              .from(noticia)
-              .innerJoin(cidade, eq(cidade.id, noticia.cidadeId))
-              .where(eq(cidade.ufId, estadoSelecionado.id))
-              .orderBy(desc(noticia.data_criacao));
-
-            console.log(`\n===== NOTÍCIAS DE ${estadoSelecionado.nome.toUpperCase()} (MAIS RECENTES PRIMEIRO) =====\n`);
-          } else if (opcaoOrdenacao === 'b') {
-            // Mais antigas primeiro
-            noticiasEstado = await db
-              .select()
-              .from(noticia)
-              .innerJoin(cidade, eq(cidade.id, noticia.cidadeId))
-              .where(eq(cidade.ufId, estadoSelecionado.id))
-              .orderBy(asc(noticia.data_criacao));
-
-            console.log(`\n===== NOTÍCIAS DE ${estadoSelecionado.nome.toUpperCase()} (MAIS ANTIGAS PRIMEIRO) =====\n`);
-          } else if (opcaoOrdenacao === 'z') {
-            break;
-          } else {
-            console.log("Opção inválida!");
+          const opcaoOrdenacao = await rl.question('Escolha uma opcao: ');
+          if (opcaoOrdenacao === 'z') {
             break;
           }
+
+          if (opcaoOrdenacao !== 'a' && opcaoOrdenacao !== 'b') {
+            console.log('Opcao invalida!');
+            break;
+          }
+
+          const ordemMaisRecente = opcaoOrdenacao === 'a';
+          const noticiasEstado = await db
+            .select()
+            .from(noticia)
+            .innerJoin(cidade, eq(cidade.id, noticia.cidadeId))
+            .where(eq(cidade.ufId, estadoSelecionado.id))
+            .orderBy(
+              ordemMaisRecente
+                ? desc(noticia.data_criacao)
+                : asc(noticia.data_criacao),
+            );
+
+          console.log(
+            `\n===== NOTICIAS DE ${estadoSelecionado.nome.toUpperCase()} (${
+              ordemMaisRecente ? 'MAIS RECENTES PRIMEIRO' : 'MAIS ANTIGAS PRIMEIRO'
+            }) =====\n`,
+          );
 
           if (noticiasEstado.length === 0) {
-            console.log("Nenhuma notícia encontrada para este estado.");
+            console.log('Nenhuma noticia encontrada para este estado.');
           } else {
-            noticiasEstado.forEach((item, index) => {
+            for (const [index, item] of noticiasEstado.entries()) {
+              const tagsDaNoticia = await buscarTagsDaNoticia(item.noticia.id);
+
               console.log(`${index + 1}. ${item.noticia.titulo}`);
-              console.log(`   Conteúdo: ${item.noticia.conteudo}`);
+              console.log(`   Conteudo: ${item.noticia.conteudo}`);
               console.log(`   Cidade: ${item.cidade.nome}`);
+              console.log(`   Tags: ${formatarTags(tagsDaNoticia)}`);
               console.log(`   Data: ${item.noticia.data_criacao}`);
-              console.log(`   ---`);
-            });
+              console.log('   ---');
+            }
           }
 
-          await rl.question("\n( z ) Voltar");
+          await rl.question('\n( z ) Voltar');
         } catch (error) {
-          console.error("Erro ao listar notícias por estado:", error);
+          console.error('Erro ao listar noticias por estado:', error);
         }
         break;
 
       case '4':
-        // Lógica de agrupamento usando 'join'
         try {
-          // Buscar todas as notícias com suas cidades e estados
           const noticiasAgrupadas = await db
             .select()
             .from(noticia)
@@ -211,24 +309,24 @@ async function main() {
             .orderBy(uf.sigla, noticia.data_criacao);
 
           if (noticiasAgrupadas.length === 0) {
-            console.log("Nenhuma notícia cadastrada.");
+            console.log('Nenhuma noticia cadastrada.');
             break;
           }
 
-          // Agrupar notícias por estado
-          const noticiasPorEstado: { [key: string]: typeof noticiasAgrupadas } = {};
+          const noticiasPorEstado: Record<string, typeof noticiasAgrupadas> = {};
           noticiasAgrupadas.forEach((item) => {
-            const ufSigla = item.uf.sigla;
-            if (!noticiasPorEstado[ufSigla]) {
-              noticiasPorEstado[ufSigla] = [];
+            const siglaUf = item.uf.sigla;
+            if (!noticiasPorEstado[siglaUf]) {
+              noticiasPorEstado[siglaUf] = [];
             }
-            noticiasPorEstado[ufSigla].push(item);
+
+            noticiasPorEstado[siglaUf].push(item);
           });
 
-          // Exibir notícias agrupadas
-          console.log("\n--- LISTA AGRUPADA POR ESTADOS ---\n");
+          console.log('\n--- LISTA AGRUPADA POR ESTADOS ---\n');
+
           let numeracao = 1;
-          const noticiasMap = new Map<number, typeof noticiasAgrupadas[0]>(); // Para referência posterior
+          const noticiasMap = new Map<number, (typeof noticiasAgrupadas)[number]>();
 
           Object.entries(noticiasPorEstado).forEach(([sigla, noticiasDoEstado]) => {
             console.log(`# ${sigla}`);
@@ -237,48 +335,54 @@ async function main() {
               noticiasMap.set(numeracao, item);
               numeracao++;
             });
-            console.log("");
+            console.log('');
           });
 
-          // Menu de opções
           while (true) {
-            const opcaoDetalhes = await rl.question("(d) Detalhar notícia\n(z) Voltar\n\nEscolha uma opção: ");
+            const opcaoDetalhes = await rl.question(
+              '(d) Detalhar noticia\n(z) Voltar\n\nEscolha uma opcao: ',
+            );
 
             if (opcaoDetalhes === 'z') {
               break;
-            } else if (opcaoDetalhes === 'd') {
-              const numeroNoticia = await rl.question("Digite o número da notícia: ");
-              const indexNoticia = parseInt(numeroNoticia);
+            }
 
+            if (opcaoDetalhes === 'd') {
+              const numeroNoticia = await rl.question('Digite o numero da noticia: ');
+              const indexNoticia = parseInt(numeroNoticia, 10);
               const noticiaDetalhada = noticiasMap.get(indexNoticia);
-              if (noticiaDetalhada) {
-                console.log(`\n=== DETALHES DA NOTÍCIA ===`);
-                console.log(`Título: ${noticiaDetalhada.noticia.titulo}`);
-                console.log(`Texto : ${noticiaDetalhada.noticia.conteudo}`);
-                console.log(`Cidade: ${noticiaDetalhada.cidade.nome}`);
-                console.log(`Estado: ${noticiaDetalhada.uf.nome} (${noticiaDetalhada.uf.sigla})`);
-                console.log(`Data: ${noticiaDetalhada.noticia.data_criacao}`);
-                console.log(`========================\n`);
-              } else {
-                console.log("Notícia não encontrada!");
+
+              if (!noticiaDetalhada) {
+                console.log('Noticia nao encontrada!');
+                continue;
               }
+
+              const tagsDaNoticia = await buscarTagsDaNoticia(noticiaDetalhada.noticia.id);
+
+              console.log('\n=== DETALHES DA NOTICIA ===');
+              console.log(`Titulo: ${noticiaDetalhada.noticia.titulo}`);
+              console.log(`Texto : ${noticiaDetalhada.noticia.conteudo}`);
+              console.log(`Cidade: ${noticiaDetalhada.cidade.nome}`);
+              console.log(`Estado: ${noticiaDetalhada.uf.nome} (${noticiaDetalhada.uf.sigla})`);
+              console.log(`Tags: ${formatarTags(tagsDaNoticia)}`);
+              console.log(`Data: ${noticiaDetalhada.noticia.data_criacao}`);
+              console.log('========================\n');
             } else {
-              console.log("Opção inválida!");
+              console.log('Opcao invalida!');
             }
           }
         } catch (error) {
-          console.error("Erro ao listar notícias agrupadas:", error);
+          console.error('Erro ao listar noticias agrupadas:', error);
         }
         break;
-        
-      case '5':
-        // Cadastrar UF
-        try {
-          const nome = await rl.question("Informe o nome da UF: ");
-          const sigla = await rl.question("Informe a sigla da UF: ");
 
-          if (nome.trim() === "" || sigla.trim() === "") {
-            console.log("Nome e sigla não podem estar vazios!");
+      case '5':
+        try {
+          const nome = await rl.question('Informe o nome da UF: ');
+          const sigla = await rl.question('Informe a sigla da UF: ');
+
+          if (nome.trim() === '' || sigla.trim() === '') {
+            console.log('Nome e sigla nao podem estar vazios!');
             break;
           }
 
@@ -287,40 +391,37 @@ async function main() {
             sigla: sigla.toUpperCase(),
           });
 
-          console.log("UF cadastrada com sucesso!");
+          console.log('UF cadastrada com sucesso!');
         } catch (error) {
-          console.error("Erro ao cadastrar UF:", error);
+          console.error('Erro ao cadastrar UF:', error);
         }
         break;
 
       case '6':
-        // Cadastrar Cidade
         try {
-          const nomeCidade = await rl.question("Informe o nome da cidade: ");
+          const nomeCidade = await rl.question('Informe o nome da cidade: ');
 
-          if (nomeCidade.trim() === "") {
-            console.log("Nome da cidade não pode estar vazio!");
+          if (nomeCidade.trim() === '') {
+            console.log('Nome da cidade nao pode estar vazio!');
             break;
           }
 
-          // Listar UFs disponíveis
           const estados = await db.select().from(uf);
-
           if (estados.length === 0) {
-            console.log("Nenhuma UF cadastrada. Cadastre uma UF antes de adicionar cidades.");
+            console.log('Nenhuma UF cadastrada. Cadastre uma UF antes de adicionar cidades.');
             break;
           }
 
-          console.log("\nUFs disponíveis:");
-          estados.forEach((e, index) => {
-            console.log(`${index + 1}. ${e.nome} (${e.sigla})`);
+          console.log('\nUFs disponiveis:');
+          estados.forEach((registro, index) => {
+            console.log(`${index + 1}. ${registro.nome} (${registro.sigla})`);
           });
 
-          const escolhaUF = await rl.question("Selecione uma UF (número): ");
-          const indexUF = parseInt(escolhaUF) - 1;
+          const escolhaUF = await rl.question('Selecione uma UF (numero): ');
+          const indexUF = parseInt(escolhaUF, 10) - 1;
 
-          if (indexUF < 0 || indexUF >= estados.length) {
-            console.log("UF inválida!");
+          if (Number.isNaN(indexUF) || indexUF < 0 || indexUF >= estados.length) {
+            console.log('UF invalida!');
             break;
           }
 
@@ -331,21 +432,19 @@ async function main() {
             ufId: ufSelecionada.id,
           });
 
-          console.log("Cidade cadastrada com sucesso!");
+          console.log('Cidade cadastrada com sucesso!');
         } catch (error) {
-          console.error("Erro ao cadastrar cidade:", error);
+          console.error('Erro ao cadastrar cidade:', error);
         }
         break;
 
-      
-
       case '7':
-        console.log("Saindo do programa...");
+        console.log('Saindo do programa...');
         rl.close();
-        return; // O 'return' quebra o while(true) e finaliza o programa
+        return;
 
       default:
-        console.log("Opção inválida. Tente novamente.");
+        console.log('Opcao invalida. Tente novamente.');
     }
   }
 }

@@ -8,6 +8,7 @@ Um aplicativo CLI para gerenciar notícias por estado usando TypeScript, Drizzle
 git clone https://github.com/vqLobo/extensao-programacao-para-web.git
 cd extensao-programacao-para-web
 npm install
+npm i -D tsx
 ```
 
 ## 🔧 Configuração do Banco de Dados
@@ -21,7 +22,7 @@ npx drizzle-kit push
 ## ▶️ Executando o programa
 
 ```bash
-npx ts-node src/index.ts
+npx tsx src/index.ts
 ```
 
 ## 📋 Menu de Opções
@@ -62,16 +63,19 @@ VibeCoder/
 ## 📝 Funcionalidades
 
 ### Cadastro
+
 - Cadastrar Estados (UF) com nome e sigla
 - Cadastrar Cidades vinculadas a um estado
 - Cadastrar Notícias vinculadas a uma cidade
 
 ### Listagem
+
 - Listar todas as notícias em ordem cronológica (recentes ou antigas)
 - Filtrar notícias por estado com opção de ordenação
 - Visualizar notícias agrupadas por estado com detalhes
 
 ### Detalhes
+
 - Visualizar informações completas de uma notícia (título, conteúdo, cidade, estado e data)
 
 ## 📝 Licença
