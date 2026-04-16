@@ -1,4 +1,4 @@
-# Trabalho N1 - Entrega 2 - CLI
+# Trabalho N1 - Entrega 3 - CLI
 
 Um aplicativo CLI para gerenciar notícias por estado usando TypeScript, Drizzle ORM e SQLite.
 
@@ -84,4 +84,4 @@ MIT
 
 ## 👨‍💻 Autor
 
-Vinicius Lobo
+Vinicius Lobo, Renan César
